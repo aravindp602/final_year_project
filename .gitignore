@@ -1,0 +1,28 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+.env
+venv/
+backend/venv/
+
+# --- Node / React / Electron ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+electron-app/node_modules/
+electron-app/.cache/
+electron-app/dist/
+electron-app/build/
+
+# --- OS / Editor junk ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
