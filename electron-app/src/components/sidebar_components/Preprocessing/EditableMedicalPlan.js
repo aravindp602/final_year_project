@@ -181,7 +181,7 @@ const EditableMedicalPlan = ({ initialPlan, explanation, onApprove, onUpdate }) 
           boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
         }}
       >
-        {isEditing ? 'Approve & Generate Code' : 'Generate Code'}
+        {isEditing ? 'Approve & Execute the plan' : 'Execute the Plan'}
       </button>
     </div>
   );
