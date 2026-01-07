@@ -2,21 +2,22 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const { spawn } = require("child_process");
-// UPDATED: Import dotenv
 const dotenv = require("dotenv");
 
-// UPDATED: Load environment variables from .env file
 dotenv.config();
 
 const { upload, uploadDir } = require("./middleware/upload");
 const resourceRoutes = require("./routes/resources");
+
+// Import Normal Processing
 const { router: normalProcessRoutes, processBranch } = require("./routes/normalProcess");
 
+// --- KEY FIX: DESTRUCTURE IMPORT HERE ---
+const { router: domainProcessRoutes } = require("./routes/domainProcess");
+
 const app = express();
-// UPDATED: Changed port to 5001 to avoid conflict
 const PORT = 5001; 
 
-// UPDATED: Define the specific path to your Python executable
 const pythonExecutable = "/Users/aravindp/Downloads/PAPAD-AutoML-main/backend/venv/bin/python";
 
 app.use(cors());
@@ -24,8 +25,9 @@ app.use(express.json());
 
 app.use(resourceRoutes);
 app.use(normalProcessRoutes);
+app.use(domainProcessRoutes);
 
-/* ---------------- Remaining Logic (Domain & Medical) ---------------- */
+/* ---------------- Remaining Logic (Domain Detection & Plans) ---------------- */
 
 app.post("/find-domain", upload.single("dataset"), (req, res) => {
   if (!req.file) {
@@ -40,7 +42,7 @@ app.post("/find-domain", upload.single("dataset"), (req, res) => {
   }, 1000);
 });
 
-// NEW ENDPOINT FOR MEDICAL PLAN GENERATION
+// GENERATE MEDICAL PLAN (Uses Llama/Gemma via Python)
 app.post("/generate-medical-plan", upload.single("dataset"), (req, res) => {
     if (!req.file) {
       return res.status(400).json({ message: "No file for plan generation" });
@@ -49,14 +51,13 @@ app.post("/generate-medical-plan", upload.single("dataset"), (req, res) => {
     console.log("🤖 [Medical Plan] Starting Gemma plan generation for:", req.file.filename);
     const filePath = path.join(uploadDir, req.file.filename);
   
-    // UPDATED: Use the specific pythonExecutable path
     const pythonProcess = spawn(pythonExecutable, [
       "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
       filePath,
     ], {
       env: {
-        ...process.env, // Pass existing environment variables
-        HF_TOKEN: process.env.HF_TOKEN // Specifically pass the loaded token
+        ...process.env, 
+        HF_TOKEN: process.env.HF_TOKEN 
       }
     });
   
@@ -68,7 +69,6 @@ app.post("/generate-medical-plan", upload.single("dataset"), (req, res) => {
     });
   
     pythonProcess.stderr.on("data", (data) => {
-      // Log Python's progress messages (like model downloads) to the backend console
       console.error(`[Gemma Log]: ${data.toString().trim()}`);
       errorOutput += data.toString();
     });
@@ -98,64 +98,6 @@ app.post("/generate-medical-plan", upload.single("dataset"), (req, res) => {
       }
     });
 });
-
-/* Medical preprocessing */
-app.post("/preprocess-medical", upload.single("dataset"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ message: "No file uploaded" });
-  }
-
-  const filePath = path.join(uploadDir, req.file.filename);
-  
-  // UPDATED: Use the specific pythonExecutable path
-  const pythonProcess = spawn(pythonExecutable, [
-    "preprocessing/Domain_based_preprocessing/handle_missing_values/medicalPreprocessor.py",
-    filePath,
-  ]);
-
-  let result = "";
-  pythonProcess.stdout.on("data", (data) => {
-    result += data.toString();
-  });
-
-  pythonProcess.stderr.on("data", (data) => {
-    console.error(`Python error: ${data}`);
-  });
-
-  pythonProcess.on("close", (code) => {
-    if (code === 0) {
-      console.log("🔎 PYTHON OUTPUT:\n", result);
-
-      const lines = result.trim().split("\n");
-
-      const systolicLine = lines.find(l => l.startsWith("SYSTOLIC_BP_COLUMN:"));
-      const diastolicLine = lines.find(l => l.startsWith("DIASTOLIC_BP_COLUMN:"));
-
-      const systolicBP = systolicLine
-        ? systolicLine.replace("SYSTOLIC_BP_COLUMN:", "").trim()
-        : null;
-      const diastolicBP = diastolicLine
-        ? diastolicLine.replace("DIASTOLIC_BP_COLUMN:", "").trim()
-        : null;
-
-      const related = lines
-        .filter(l => !l.startsWith("SYSTOLIC_BP_COLUMN:") && !l.startsWith("DIASTOLIC_BP_COLUMN:") && l.includes(":"))
-        .map(l => {
-          const [col, score] = l.split(":");
-          return { column: col.trim(), similarity: parseFloat(score) };
-        });
-
-      res.json({
-        systolicBPColumn: systolicBP,
-        diastolicBPColumn: diastolicBP,
-        relatedAttributes: related,
-      });
-    } else {
-      res.status(500).json({ message: "Medical preprocessing failed" });
-    }
-  });
-});
-
 
 /* ---------------- Run Configuration ---------------- */
 
@@ -204,17 +146,15 @@ app.post("/run-config", upload.single("dataset"), async (req, res) => {
         if (item.status === 'success') {
             finalResults[item.branchName] = item.data;
         } else {
-            // --- FIX: Add failed branch to finalResults with Error Info ---
             finalResults[item.branchName] = {
                 status: 'failed',
-                error: item.error, // Pass the specific error message
-                trainingResults: [], // Empty so it doesn't break UI
+                error: item.error,
+                trainingResults: [], 
                 outputs: {}
             };
         }
     });
 
-    // Send everything in 'outputs' so the frontend ResultsPanel can render it
     res.json({
         message: "Multi-Branch Pipeline Completed",
         outputs: finalResults, 
