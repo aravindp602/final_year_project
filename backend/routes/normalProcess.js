@@ -6,6 +6,7 @@ const { spawn } = require("child_process");
 const { upload } = require("../middleware/upload");
 
 const rootDir = path.join(__dirname, "..");
+// Update this path if you move the project
 const pythonExecutable = "/Users/aravindp/Downloads/PAPAD-AutoML-main/backend/venv/bin/python";
 
 const loadJsonSafe = (filePath) => {
@@ -210,6 +211,9 @@ const processBranch = async (branchName, datasetPath, pList, mList, oList) => {
   };
 };
 
+// -------------------------------------------------------------
+// EXISTING NORMAL PROCESSING ENDPOINT
+// -------------------------------------------------------------
 router.post("/preprocess-normal", upload.single("dataset"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Dataset file missing" });
 
@@ -232,5 +236,155 @@ router.post("/preprocess-normal", upload.single("dataset"), async (req, res) => 
     res.status(500).json({ message: "Pipeline Processing Failed", error: err.message });
   }
 });
+
+// -------------------------------------------------------------
+// NEW: EXECUTE APPROVED MEDICAL PLAN ENDPOINT
+// -------------------------------------------------------------
+router.post("/execute-approved-plan", upload.single("dataset"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "Dataset file missing" });
+    if (!req.body.plan) return res.status(400).json({ error: "Medical Plan missing" });
+  
+    const plan = JSON.parse(req.body.plan);
+    const datasetPath = req.file.path;
+    const branchName = "main_branch";
+    
+    // Setup Logging Paths (Domain Based)
+    const logDirName = `${branchName}_logging`;
+    const logDirPath = path.join(rootDir, "preprocessing", "Domain_based_preprocessing", logDirName);
+    const outputCsvName = `${branchName}_processed.csv`;
+    const preprocessedPath = path.join(rootDir, outputCsvName);
+    
+    if (!fs.existsSync(logDirPath)) fs.mkdirSync(logDirPath, { recursive: true });
+  
+    console.log(`\n🏥 Executing Medical Plan on ${branchName}...`);
+  
+    try {
+      // 1. Run the Python Executor
+      await runPythonScript(
+        "preprocessing/Domain_based_preprocessing/medical_plan_executor.py",
+        [datasetPath, JSON.stringify(plan), preprocessedPath, logDirPath]
+      );
+  
+      // 2. Build Graph Nodes based on Action Types found in Plan
+      // We want to visualize what just happened
+      const actions = new Set();
+      Object.values(plan).forEach(details => actions.add(details.action));
+  
+      const nodes = [];
+      const edges = [];
+      let xPos = 50;
+      let lastNodeId = "dataset-node";
+  
+      // Dataset Node
+      nodes.push({
+        id: "dataset-node",
+        type: "datasetNode",
+        position: { x: xPos, y: 100 },
+        data: { label: "Dataset" },
+      });
+      xPos += 250;
+  
+      // Map Plan Actions to Graph Nodes
+      // We force a logical order for the visual graph to look clean
+      const actionMapping = [
+          { key: 'drop', label: 'Drop Identifiers', id: 'dp_drop' },
+          { key: 'one_hot_encode', label: 'One-Hot Encoding', id: 'dp_ohe' },
+          { key: 'label_encode', label: 'Label Encoding', id: 'dp_le' },
+          { key: 'scale', label: 'Standard Scaling', id: 'dp_scale' }
+      ];
+  
+      actionMapping.forEach(step => {
+          if (actions.has(step.key)) {
+              const newNodeId = `${step.id}_${Date.now()}`;
+              nodes.push({
+                  id: newNodeId,
+                  // Use 'domain' type which maps to DomainPreprocessingNode in frontend
+                  type: "domain", 
+                  position: { x: xPos, y: 100 },
+                  data: { 
+                      label: step.label, 
+                      baseId: step.id,
+                      color: "#b730cfff" // Purple
+                  }
+              });
+              edges.push({
+                  id: `e-${lastNodeId}-${newNodeId}`,
+                  source: lastNodeId,
+                  target: newNodeId,
+                  animated: true
+              });
+              lastNodeId = newNodeId;
+              xPos += 250;
+          }
+      });
+  
+      // 3. Auto-Train Model (Default: MiniBatch KMeans) to give immediate results
+      const defaultModelId = "m2"; 
+      const defaultOutputId = "o1"; 
+      
+      // -- Model Node --
+      const modelNodeId = `m_${defaultModelId}_${Date.now()}`;
+      nodes.push({ id: modelNodeId, type: "modelNode", position: { x: xPos, y: 100 }, data: { label: "Auto-KMeans", baseId: defaultModelId } });
+      edges.push({ id: `e-${lastNodeId}-${modelNodeId}`, source: lastNodeId, target: modelNodeId, animated: true });
+      lastNodeId = modelNodeId;
+      xPos += 250;
+  
+      // -- Output Node --
+      const outNodeId = `o_${defaultOutputId}_${Date.now()}`;
+      nodes.push({ id: outNodeId, type: "outputNode", position: { x: xPos, y: 85 }, data: { label: "Scatter Plot", baseId: defaultOutputId } });
+      edges.push({ id: `e-${lastNodeId}-${outNodeId}`, source: lastNodeId, target: outNodeId, animated: true });
+  
+      // 4. Run Training & Output Generation in Background
+      console.log("   🏥 Starting Default Training (MiniBatch KMeans)...");
+      
+      // Load available models config to find details for MiniBatch KMeans
+      const allModels = loadJsonSafe("model_selectionAndTraining/model_names.json");
+      const selectedModelObj = allModels.filter(m => m.id === defaultModelId);
+  
+      let trainingResults = [];
+      let trainedModelPath = null;
+      let vizData = {};
+  
+      if (selectedModelObj.length > 0) {
+           // Run Model Handler
+           const trainOutput = await runPythonScript(
+               "model_selectionAndTraining/model_handler.py", 
+               [preprocessedPath, JSON.stringify(selectedModelObj)]
+           );
+           
+           if (trainOutput.includes("__JSON_START__")) {
+               const jsonStr = trainOutput.split("__JSON_START__")[1].split("__JSON_END__")[0];
+               trainingResults = JSON.parse(jsonStr);
+               if (trainingResults.length > 0) trainedModelPath = trainingResults[0].path;
+           }
+           console.log(`   ✅ Model Training Complete.`);
+  
+           // Run Output Handler
+           if (trainedModelPath) {
+               const outOutput = await runPythonScript(
+                   "output_section/output_handler.py",
+                   [preprocessedPath, trainedModelPath, JSON.stringify([defaultOutputId])]
+               );
+               if (outOutput.includes("__JSON_START__")) {
+                  const jsonStr = outOutput.split("__JSON_START__")[1].split("__JSON_END__")[0];
+                  vizData = JSON.parse(jsonStr);
+              }
+              console.log(`   ✅ Output Generation Complete.`);
+           }
+      }
+  
+      res.json({
+          message: "Medical Plan Executed Successfully",
+          graph: { nodes, edges },
+          outputs: vizData,
+          trainingResults: trainingResults,
+          isCustom: false
+      });
+  
+    } catch (err) {
+      console.error("❌ Medical Plan Execution Failed:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 
 module.exports = { router, processBranch };
