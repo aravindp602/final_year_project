@@ -32,7 +32,7 @@ const Dashboard = () => {
       {isLoading && <LoadingOverlay message="Processing..." />}
 
       <header style={{ backgroundColor: '#007bff', color: 'white', padding: '12px 20px', fontSize: '20px', fontWeight: 'bold', flexShrink: 0 }}>
-        PAPAD AutoML
+         AutoML Tool
       </header>
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>

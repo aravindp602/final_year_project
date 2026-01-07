@@ -1,33 +1,18 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const EditableMedicalPlan = ({ initialPlan, explanation, onApprove, onUpdate }) => {
   const [plan, setPlan] = useState(initialPlan);
   const [isEditing, setIsEditing] = useState(false);
-  
-  // --- NEW: State for the editable explanation ---
   const [editedExplanation, setEditedExplanation] = useState("");
 
-  // This hook now parses the explanation and sets the initial state for the textarea
+  // Load explanation into state
   useEffect(() => {
     if (explanation) {
-      try {
-        const parts = explanation.split(/============================================================/);
-        const section2Content = parts.find(part => part.includes("Section 2: Detailed Walkthrough of the Preprocessing Plan"));
-        
-        if (section2Content) {
-          const cleanText = section2Content.replace("Section 2: Detailed Walkthrough of the Preprocessing Plan", "").trim();
-          setEditedExplanation(cleanText);
-        } else {
-          setEditedExplanation("Could not extract explanation section. Please check the full report.");
-        }
-      } catch (e) {
-        console.error("Failed to parse explanation:", e);
-        setEditedExplanation("Error displaying explanation.");
-      }
+      setEditedExplanation(explanation);
     }
   }, [explanation]);
 
-  // Update the local plan state when the initial plan prop changes
+  // Update local state when prop changes
   useEffect(() => {
     setPlan(initialPlan);
     setIsEditing(false);
@@ -48,7 +33,6 @@ const EditableMedicalPlan = ({ initialPlan, explanation, onApprove, onUpdate }) 
     setIsEditing(true);
   };
   
-  // Handler for the textarea changes
   const handleExplanationChange = (e) => {
       setEditedExplanation(e.target.value);
       setIsEditing(true);
@@ -64,53 +48,120 @@ const EditableMedicalPlan = ({ initialPlan, explanation, onApprove, onUpdate }) 
       marginTop: '15px',
       backgroundColor: '#faf7fb'
     }}>
-      <h5 style={{ marginTop: 0, color: '#b730cfff' }}>AI-Generated Medical Plan</h5>
+      <h5 style={{ marginTop: 0, color: '#b730cfff', display: 'flex', alignItems: 'center' }}>
+        <span>🏥 AI Clinical Data Plan</span>
+      </h5>
       
-      {/* Plan Section - now with more vertical space */}
+      {/* Plan Section Wrapper */}
       <div style={{ 
-        maxHeight: '250px', // Increased max-height for better scrolling
-        overflowY: 'auto', 
-        marginBottom: '15px', 
         border: '1px solid #e0c8e6', 
         borderRadius: '4px', 
-        padding: '10px', 
-        background: '#fff' 
+        background: '#fff',
+        marginBottom: '15px',
+        overflow: 'hidden' // Keeps the rounded corners
       }}>
-        {Object.entries(plan).map(([column, details]) => (
-          <div key={column} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', fontSize: '13px' }}>
-            <strong style={{ flex: 1, minWidth: '100px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', title: column }}>{column}</strong>
-            <select
-              value={details.action}
-              onChange={(e) => handleActionChange(column, e.target.value)}
-              style={{ flex: 2, padding: '4px', borderRadius: '4px', border: '1px solid #ccc' }}
-            >
-              <option value="drop">Drop</option>
-              <option value="scale">Scale</option>
-              <option value="one_hot_encode">One-Hot Encode</option>
-              <option value="label_encode">Label Encode</option>
-            </select>
+        {/* 
+           1. overflowX: 'auto' enables horizontal scrolling if the screen is too narrow 
+           2. maxHeight: '400px' keeps vertical scrolling 
+        */}
+        <div style={{ overflowX: 'auto', width: '100%' }}>
+          <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+            
+            {/* minWidth: '600px' prevents the columns from squashing */}
+            <table style={{ width: '100%', minWidth: '600px', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+              
+              <colgroup>
+                <col style={{ width: '25%' }} /> {/* Column Name */}
+                <col style={{ width: '30%' }} /> {/* Action */}
+                <col style={{ width: '45%' }} /> {/* Logic */}
+              </colgroup>
+
+              <thead style={{ position: 'sticky', top: 0, background: '#f8f9fa', borderBottom: '2px solid #ddd', zIndex: 2 }}>
+                <tr>
+                  <th style={{ textAlign: 'left', padding: '10px 12px', color: '#555', fontSize: '12px', fontWeight: 'bold' }}>Column Name</th>
+                  <th style={{ textAlign: 'left', padding: '10px 12px', color: '#555', fontSize: '12px', fontWeight: 'bold' }}>Action</th>
+                  <th style={{ textAlign: 'left', padding: '10px 12px', color: '#555', fontSize: '12px', fontWeight: 'bold' }}>Clinical Logic</th>
+                </tr>
+              </thead>
+              
+              <tbody>
+                {Object.entries(plan).map(([column, details]) => (
+                  <tr key={column} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                    
+                    {/* Column Name: Allow wrapping so "Obesity" shows fully instead of "Ob..." */}
+                    <td style={{ 
+                      padding: '12px', 
+                      fontSize: '13px', 
+                      fontWeight: '600', 
+                      color: '#333', 
+                      wordWrap: 'break-word',
+                      verticalAlign: 'top'
+                    }}>
+                      {column}
+                    </td>
+
+                    {/* Action Dropdown */}
+                    <td style={{ padding: '12px', verticalAlign: 'top' }}>
+                      <select
+                        value={details.action}
+                        onChange={(e) => handleActionChange(column, e.target.value)}
+                        style={{ 
+                          width: '100%', 
+                          padding: '6px', 
+                          borderRadius: '4px', 
+                          border: '1px solid #ccc',
+                          fontSize: '12px',
+                          cursor: 'pointer',
+                          backgroundColor: details.action === 'drop' ? '#fff1f0' : '#f0f9ff',
+                          color: details.action === 'drop' ? '#d9534f' : '#000'
+                        }}
+                      >
+                        <option value="drop">Drop</option>
+                        <option value="scale">Scale (Standardize)</option>
+                        <option value="one_hot_encode">One-Hot Encode</option>
+                        <option value="label_encode">Label Encode</option>
+                      </select>
+                    </td>
+
+                    {/* Logic: Allow text to wrap naturally */}
+                    <td style={{ 
+                      padding: '12px', 
+                      fontSize: '12px', 
+                      color: '#555', 
+                      lineHeight: '1.4', 
+                      verticalAlign: 'top',
+                      fontStyle: 'italic'
+                    }}>
+                       {details.reason || "No specific reason provided."}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        ))}
+        </div>
       </div>
 
-      {/* Explanation Section - now an editable textarea */}
+      {/* Explanation Section */}
       <div style={{ marginBottom: '15px' }}>
-        <h6 style={{ margin: '0 0 5px 0', color: '#555' }}>Explanation (Editable):</h6>
+        <h6 style={{ margin: '0 0 5px 0', color: '#555' }}>Clinical Rationale & Report (Editable):</h6>
         <textarea
           value={editedExplanation}
           onChange={handleExplanationChange}
+          placeholder="AI explanation will appear here..."
           style={{
             width: '100%',
-            boxSizing: 'border-box', // Ensures padding doesn't add to width
-            minHeight: '150px',   // Start with a good height
-            resize: 'vertical',   // Allow user to resize vertically
-            fontSize: '12px',
-            color: '#444',
-            padding: '10px',
+            boxSizing: 'border-box',
+            minHeight: '200px',
+            resize: 'vertical',
+            fontSize: '13px',
+            lineHeight: '1.5',
+            color: '#333',
+            padding: '12px',
             backgroundColor: '#fff',
             border: '1px solid #e0c8e6',
             borderRadius: '4px',
-            fontFamily: 'inherit' // Use the same font as the rest of the app
+            fontFamily: 'monospace'
           }}
         />
       </div>
@@ -119,13 +170,15 @@ const EditableMedicalPlan = ({ initialPlan, explanation, onApprove, onUpdate }) 
         onClick={() => onApprove(plan)}
         style={{
           width: '100%',
-          padding: '10px',
+          padding: '12px',
           border: 'none',
           borderRadius: '6px',
           backgroundColor: '#28a745',
           color: 'white',
           fontWeight: 'bold',
-          cursor: 'pointer'
+          fontSize: '14px',
+          cursor: 'pointer',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
         }}
       >
         {isEditing ? 'Approve & Generate Code' : 'Generate Code'}

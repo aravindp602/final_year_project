@@ -6,20 +6,19 @@ import traceback
 import os
 from typing import Dict, Any, Optional, Tuple
 
-# Use the official, modern Hugging Face client, as you specified
+# Use the official, modern Hugging Face client
 from huggingface_hub import InferenceClient
 
 class MedicalPlanGenerator:
     """
     A specialized class that uses the Hugging Face InferenceClient to generate
-    a high-quality preprocessing plan and a detailed explanation using the specified Llama model.
+    a high-quality, domain-aware preprocessing plan using the specified Llama model.
     """
     ALLOWED_ACTIONS = {"drop", "scale", "one_hot_encode", "label_encode"}
 
     def __init__(
         self,
         hf_token: str,
-        # Using the exact model string you requested
         model_id: str = "meta-llama/Llama-3.1-8B-Instruct:novita",
         target_col: str = "Level",
     ):
@@ -35,27 +34,27 @@ class MedicalPlanGenerator:
         print(
             f"🚀 Initializing Medical Plan Generator with InferenceClient for model '{model_id}'...",
             file=sys.stderr,
+            flush=True
         )
-        print("✅ Generator ready.", file=sys.stderr)
+        print("✅ Generator ready.", file=sys.stderr, flush=True)
 
 
     def _call_api(self, messages: list, max_new_tokens: int) -> str:
         """Helper function to call the chat completions API."""
         try:
-            # Use the client's chat.completions.create method
             response = self.client.chat.completions.create(
                 model=self.model_id,
                 messages=messages,
                 max_tokens=max_new_tokens,
-                temperature=0.1,
+                temperature=0.1, # Low temperature for strict adherence to rules
                 stream=False,
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"❌ API Request Failed. Full Error Traceback:", file=sys.stderr)
+            print(f"❌ API Request Failed. Full Error Traceback:", file=sys.stderr, flush=True)
             if hasattr(e, 'response') and e.response is not None:
-                 print(f"Response Status: {e.response.status_code}", file=sys.stderr)
-                 print(f"Response Body: {e.response.text}", file=sys.stderr)
+                 print(f"Response Status: {e.response.status_code}", file=sys.stderr, flush=True)
+                 print(f"Response Body: {e.response.text}", file=sys.stderr, flush=True)
             traceback.print_exc(file=sys.stderr)
             return ""
 
@@ -65,15 +64,18 @@ class MedicalPlanGenerator:
         if not text:
             return None
 
+        # Try to find markdown code block first
         fenced = re.search(r"```json\s*(.*)```", text, re.DOTALL | re.IGNORECASE)
         if fenced:
             candidate = fenced.group(1).strip()
         else:
+            # Fallback: look for the first opening brace
             start = text.find("{")
             if start == -1:
                 return None
             candidate = text[start:]
 
+        # Balance braces to find the end of the JSON object
         depth = 0
         in_string = False
         escape = False
@@ -102,31 +104,56 @@ class MedicalPlanGenerator:
         return None
 
     def generate_plan(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Generates a column-wise preprocessing plan using the API."""
-        print("\n--- Generating Preprocessing Plan (via API) ---", file=sys.stderr)
+        """Generates a domain-aware preprocessing plan using the API."""
+        print("\n--- Generating Preprocessing Plan (via API) ---", file=sys.stderr, flush=True)
         
+        # Prepare column info
         column_info = "\n".join([f"- `{col}` (dtype: {df[col].dtype}, unique values: {df[col].nunique()})" for col in df.columns])
 
+        # --- ADVANCED SYSTEM PROMPT ---
         system_prompt = (
-            "You are a data science expert. Your only function is to create a preprocessing plan. "
-            "You must output a single, valid JSON object and nothing else. Do not add any conversational text or markdown."
+            "You are a Senior Clinical Data Scientist. "
+            "You are analyzing a medical dataset for a research study. "
+            "Your job is to clean the data based on **Biological and Clinical Significance**, not just statistics. "
+            "You classify variables as 'Administrative' (useless), 'Demographic' (risk factors), or 'Physiological' (signals)."
         )
 
+        # --- ADVANCED DOMAIN-SPECIFIC USER PROMPT ---
         user_prompt = f"""
-Create a preprocessing plan for a medical dataset to predict the target column '{self.target_col}'.
+Analyze the provided medical dataset columns and generate a preprocessing plan to predict the target column: '{self.target_col}'.
 
-**Instructions:**
-1.  **Output Format:** Your entire response MUST be a single, raw JSON object.
-2.  **JSON Keys:** The JSON object's top-level keys MUST be the exact column names from the list.
-3.  **JSON Values:** Each column's value MUST be an object with `"action"` and `"reason"`.
-4.  **Allowed Actions:** The `"action"` value MUST be one of: {sorted(self.ALLOWED_ACTIONS)}.
-5.  **Target Column Rule:** The action for the target column, `{self.target_col}`, **MUST** be `"label_encode"`.
-6.  **Logic:** Use `"drop"` for identifiers, `"scale"` for numbers, and `"one_hot_encode"` or `"label_encode"` for categories based on uniqueness.
+**1. Decision Rules (Follow Strictly):**
+- **Drop** if the column is an administrative identifier (e.g., Patient ID, Visit Code).
+- **Scale** if the column is a continuous biological measurement (e.g., Age, BMI, Blood Pressure, Lab Results).
+- **One-Hot Encode** if the column is a nominal category (e.g., Gender, Race, Smoking Status).
+- **Label Encode** if the column is ordinal (Low/Med/High) OR if it is the Target Column ('{self.target_col}').
 
-**Dataset Columns to Process:**
+**2. Reasoning Requirements (Crucial):**
+- The `"reason"` field MUST explain the **medical nature** of the variable.
+- ❌ BAD REASON: "It is an integer with high cardinality."
+- ✅ GOOD REASON: "Administrative identifier with no biological predictive value."
+- ❌ BAD REASON: "It is a float."
+- ✅ GOOD REASON: "Continuous physiological vital sign that varies biologically."
+- ❌ BAD REASON: "It is a category."
+- ✅ GOOD REASON: "Nominal demographic risk factor."
+
+**Dataset Columns:**
 {column_info}
 
-**Your JSON Output:**
+**Output Requirements:**
+1. Return ONLY a valid JSON object.
+2. Keys = Column Names.
+3. Values = Object with `"action"` and `"reason"`.
+
+**Example Output:**
+{{
+  "Patient_ID": {{"action": "drop", "reason": "Administrative ID; contains no clinical signal."}},
+  "Age": {{"action": "scale", "reason": "Demographic variable; scaling aligns biological timeframe."}},
+  "Cholesterol": {{"action": "scale", "reason": "Physiological biomarker; requires normalization."}},
+  "Gender": {{"action": "one_hot_encode", "reason": "Nominal demographic factor."}}
+}}
+
+**Your JSON:**
 """
         messages = [
             {"role": "system", "content": system_prompt},
@@ -136,71 +163,60 @@ Create a preprocessing plan for a medical dataset to predict the target column '
         response = self._call_api(messages, max_new_tokens=4096)
         
         if not response:
-            print("❌ Error: Received no response from API.", file=sys.stderr)
+            print("❌ Error: Received no response from API.", file=sys.stderr, flush=True)
             return {}
 
         plan_str = self._extract_json(response)
         if not plan_str:
-            print(f"❌ Error: No JSON object detected in API response.\nRaw response:\n{response}", file=sys.stderr)
+            print(f"❌ Error: No JSON object detected in API response.\nRaw response:\n{response}", file=sys.stderr, flush=True)
             return {}
 
         try:
             plan = json.loads(plan_str)
-            print("--- Generated Plan (JSON) ---", file=sys.stderr)
-            print(json.dumps(plan, indent=2), file=sys.stderr)
+            print("--- Generated Plan (JSON) ---", file=sys.stderr, flush=True)
+            print(json.dumps(plan, indent=2), file=sys.stderr, flush=True)
             return plan
         except json.JSONDecodeError as e:
-            print(f"❌ Error decoding JSON: {e}", file=sys.stderr)
-            print("---- Extracted JSON candidate ----", file=sys.stderr)
-            print(plan_str, file=sys.stderr)
+            print(f"❌ Error decoding JSON: {e}", file=sys.stderr, flush=True)
+            print("---- Extracted JSON candidate ----", file=sys.stderr, flush=True)
+            print(plan_str, file=sys.stderr, flush=True)
             return {}
 
     def explain_plan_and_guide(self, plan: Dict[str, Any]) -> str:
-        """Generates a detailed explanation using the API."""
-        print("\n--- Generating Explanation and Guidance (via API) ---", file=sys.stderr)
+        """Generates a detailed clinical explanation using the API."""
+        print("\n--- Generating Explanation and Guidance (via API) ---", file=sys.stderr, flush=True)
         if not plan:
             return "No plan was generated to explain."
         plan_str = json.dumps(plan, indent=2)
 
+        # --- ADVANCED EXPLANATION PROMPT ---
         messages = [
             {
                 "role": "system",
-                "content": "You are a senior data science mentor. Your task is to write a clear, practical, and well-structured report.",
+                "content": "You are a Medical AI Research Mentor. You explain data strategies using clinical terminology (e.g., 'biomarkers', 'confounding variables', 'patient demographics').",
             },
             {
                 "role": "user",
                 "content": f"""
-The goal is to preprocess a medical dataset to predict '{self.target_col}'. Here is the agreed JSON preprocessing plan:
-{plan_str}
+I have generated a preprocessing plan for a medical dataset to predict '{self.target_col}'.
+Plan: {plan_str}
 
-Write a detailed report with three sections as described below. Use markdown for formatting.
+Please generate a comprehensive Markdown report.
 
-============================================================
-Section 1: Why Preprocessing Matters
-============================================================
-- Explain why raw medical data is rarely ready for machine learning and how issues like different scales and categorical variables can hurt model performance.
+**Report Structure:**
+1. **Clinical Data Strategy:** Explain why we remove administrative IDs (to prevent leakage) and how we handle biological signals vs. demographics.
+2. **Detailed Rationale:** Group columns by action.
+   - For 'Scale', explain how this standardizes different biological units (e.g., years vs mg/dL).
+   - For 'Encode', explain how this handles qualitative patient history.
+3. **Implementation Guide:** A brief Python snippet showing `StandardScaler` and `LabelEncoder` implementation.
 
-============================================================
-Section 2: Detailed Walkthrough of the Preprocessing Plan
-============================================================
-- Group the columns by their "action" from the plan (e.g., create a subheading for "Scaling", "Dropping", etc.).
-- For each group, explain what the action does and why it's a good choice for the columns listed under it.
-- Explicitly describe how the target column '{self.target_col}' is being handled.
-
-============================================================
-Section 3: How to Implement This Plan in Python
-============================================================
-- Provide a high-level guide using Pandas and Scikit-learn.
-- Mention specific tools like `df.drop()`, `StandardScaler`, and `OneHotEncoder`.
-- Emphasize the importance of doing a `train_test_split` before fitting any transformers to prevent data leakage.
-
-Your complete report:
+Keep the tone professional, medical, and accessible.
 """,
             },
         ]
 
         explanation = self._call_api(messages, max_new_tokens=3072)
-        print("--- Generated Report ---", file=sys.stderr)
+        print("--- Generated Report ---", file=sys.stderr, flush=True)
         return explanation
 
     def run(self, df: pd.DataFrame) -> Tuple[Dict[str, Any], str]:
@@ -214,23 +230,22 @@ Your complete report:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Error: No file path provided.", file=sys.stderr)
+        print("Error: No file path provided.", file=sys.stderr, flush=True)
         sys.exit(1)
 
-    # --- THE DEFINITIVE FIX IS HERE ---
-    # Correctly access the command-line arguments by their index.
+    # Command-line arguments
     FILE_PATH = sys.argv[1]
     TARGET_COLUMN = sys.argv[2] if len(sys.argv) > 2 else "Level"
 
-    print(f"--- Loading data from: {FILE_PATH} ---", file=sys.stderr)
+    print(f"--- Loading data from: {FILE_PATH} ---", file=sys.stderr, flush=True)
     try:
         raw_df = pd.read_csv(FILE_PATH)
-        print("✅ File loaded successfully.\n", file=sys.stderr)
+        print("✅ File loaded successfully.\n", file=sys.stderr, flush=True)
     except Exception as e:
-        print(f"❌ Error loading CSV: {e}", file=sys.stderr)
+        print(f"❌ Error loading CSV: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
 
-    print("--- Initializing Medical Plan Generator ---", file=sys.stderr)
+    print("--- Initializing Medical Plan Generator ---", file=sys.stderr, flush=True)
     try:
         HF_TOKEN = os.getenv("HF_TOKEN")
         if not HF_TOKEN:
@@ -243,15 +258,18 @@ if __name__ == "__main__":
         )
         generated_plan, generated_explanation = plan_generator.run(raw_df)
 
-        print("__PLAN_START__")
-        print(json.dumps(generated_plan))
-        print("__PLAN_END__")
-        print("__EXPLANATION_START__")
-        print(generated_explanation)
-        print("__EXPLANATION_END__")
+        # Output to STDOUT (Visible in UI)
+        # Using flush=True to ensure it appears immediately
+        print("__PLAN_START__", flush=True)
+        print(json.dumps(generated_plan, indent=2), flush=True)
+        print("__PLAN_END__", flush=True)
+        
+        print("__EXPLANATION_START__", flush=True)
+        print(generated_explanation, flush=True)
+        print("__EXPLANATION_END__", flush=True)
 
-        print("\n--- Process Complete ---", file=sys.stderr)
+        print("\n--- Process Complete ---", file=sys.stderr, flush=True)
     except Exception as e:
-        print(f"❌ An unexpected error occurred: {e}", file=sys.stderr)
+        print(f"❌ An unexpected error occurred: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
