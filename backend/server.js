@@ -1,33 +1,31 @@
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
-const { spawn } = require("child_process");
 const dotenv = require("dotenv");
 
+// Load .env
 dotenv.config();
 
-const { upload, uploadDir } = require("./middleware/upload");
+const { upload } = require("./middleware/upload");
 const resourceRoutes = require("./routes/resources");
 
-// Import Normal Processing
+// 1. Import Normal Processing Routes & Helper
 const { router: normalProcessRoutes, processBranch } = require("./routes/normalProcess");
 
-// --- KEY FIX: DESTRUCTURE IMPORT HERE ---
+// 2. Import Domain Processing Routes (Includes generate-medical-plan)
 const { router: domainProcessRoutes } = require("./routes/domainProcess");
 
 const app = express();
-const PORT = 5001; 
-
-const pythonExecutable = "/Users/aravindp/Downloads/PAPAD-AutoML-main/backend/venv/bin/python";
+const PORT = 5001; // Changed to 5001 to avoid conflicts
 
 app.use(cors());
 app.use(express.json());
 
+// 3. Register Routes
 app.use(resourceRoutes);
 app.use(normalProcessRoutes);
-app.use(domainProcessRoutes);
+app.use(domainProcessRoutes); 
 
-/* ---------------- Remaining Logic (Domain Detection & Plans) ---------------- */
+/* ---------------- Remaining Logic ---------------- */
 
 app.post("/find-domain", upload.single("dataset"), (req, res) => {
   if (!req.file) {
@@ -42,65 +40,7 @@ app.post("/find-domain", upload.single("dataset"), (req, res) => {
   }, 1000);
 });
 
-// GENERATE MEDICAL PLAN (Uses Llama/Gemma via Python)
-app.post("/generate-medical-plan", upload.single("dataset"), (req, res) => {
-    if (!req.file) {
-      return res.status(400).json({ message: "No file for plan generation" });
-    }
-  
-    console.log("🤖 [Medical Plan] Starting Gemma plan generation for:", req.file.filename);
-    const filePath = path.join(uploadDir, req.file.filename);
-  
-    const pythonProcess = spawn(pythonExecutable, [
-      "preprocessing/Domain_based_preprocessing/medical_plan_generator.py",
-      filePath,
-    ], {
-      env: {
-        ...process.env, 
-        HF_TOKEN: process.env.HF_TOKEN 
-      }
-    });
-  
-    let fullOutput = "";
-    let errorOutput = "";
-  
-    pythonProcess.stdout.on("data", (data) => {
-      fullOutput += data.toString();
-    });
-  
-    pythonProcess.stderr.on("data", (data) => {
-      console.error(`[Gemma Log]: ${data.toString().trim()}`);
-      errorOutput += data.toString();
-    });
-  
-    pythonProcess.on("close", (code) => {
-      if (code === 0) {
-        try {
-          const planMatch = fullOutput.match(/__PLAN_START__([\s\S]*?)__PLAN_END__/);
-          const explanationMatch = fullOutput.match(/__EXPLANATION_START__([\s\S]*?)__EXPLANATION_END__/);
-          
-          if (!planMatch || !explanationMatch) {
-            throw new Error("Could not find delimiters in Python script output.");
-          }
-
-          const plan = JSON.parse(planMatch[1]);
-          const explanation = explanationMatch[1].trim();
-
-          console.log("✅ [Medical Plan] Successfully generated and parsed plan.");
-          res.json({ plan, explanation });
-        } catch (e) {
-          console.error("❌ [Medical Plan] Error parsing Python output:", e);
-          res.status(500).json({ message: "Failed to parse the generated plan." });
-        }
-      } else {
-        console.error(`❌ [Medical Plan] Python script failed with code ${code}.`);
-        res.status(500).json({ message: "Plan generation script failed.", details: errorOutput });
-      }
-    });
-});
-
-/* ---------------- Run Configuration ---------------- */
-
+// Run Configuration (Custom Branches)
 app.post("/run-config", upload.single("dataset"), async (req, res) => {
   try {
     if (!req.file) {
@@ -130,6 +70,7 @@ app.post("/run-config", upload.single("dataset"), async (req, res) => {
         });
 
         try {
+            // Reusing processBranch from normalProcess.js
             const result = await processBranch(branchName, req.file.path, pList, mList, oList);
             return { branchName, status: 'success', data: result };
         } catch (error) {

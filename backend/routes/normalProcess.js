@@ -6,8 +6,6 @@ const { spawn } = require("child_process");
 const { upload } = require("../middleware/upload");
 
 const rootDir = path.join(__dirname, "..");
-// ✅ CRITICAL: Use the venv python path to find pandas/sklearn
-const pythonExecutable = "/Users/aravindp/Downloads/PAPAD-AutoML-main/backend/venv/bin/python";
 
 const loadJsonSafe = (filePath) => {
   try {
@@ -70,30 +68,34 @@ const generateGraphData = (pList, mList, oList) => {
   return { nodes, edges };
 };
 
+// --- UPDATED PYTHON RUNNER (Hides JSON Blob) ---
 const runPythonScript = (scriptPath, args) => {
   return new Promise((resolve, reject) => {
-    // ✅ Use pythonExecutable variable
-    const python = spawn(pythonExecutable, ["-u", scriptPath, ...args]);
+    const python = spawn("python", ["-u", scriptPath, ...args]);
     let output = "";
     let errorOutput = "";
     
+    // Flag to track if we are currently inside the JSON data block
     let isPrintingJson = false;
 
     python.stdout.on("data", (data) => { 
         const str = data.toString();
-        output += str;
+        output += str; // Always capture full output for logic
         
         // --- SMART LOGGING ---
+        // 1. Detect Start of JSON
         if (str.includes("__JSON_START__")) {
             isPrintingJson = true;
             const preJson = str.split("__JSON_START__")[0];
             if (preJson.trim()) process.stdout.write(preJson);
         } 
+        // 2. Detect End of JSON
         else if (str.includes("__JSON_END__")) {
             isPrintingJson = false;
             const postJson = str.split("__JSON_END__")[1];
             if (postJson && postJson.trim()) process.stdout.write(postJson);
         } 
+        // 3. Normal Logs (Only print if NOT inside JSON block)
         else if (!isPrintingJson) {
             // Check for Winner Line to highlight
             if (str.includes("====== BEST MODEL FOUND:")) {
@@ -226,8 +228,7 @@ router.post("/preprocess-normal", upload.single("dataset"), async (req, res) => 
   let outputIds = req.body.outputIds ? JSON.parse(req.body.outputIds) : [];
 
   if (!isCustom) {
-     // ✅ FORCE FULL AUTO-ML ('m0') WHEN USING DEFAULT NORMAL FLOW
-     modelIds = ['m0']; 
+     modelIds = ['m0'];
      outputIds = ['o1'];
      const allModules = loadJsonSafe("preprocessing/Normal_preprocessing/normal_preprocessing_modules.json");
      if (customIds.length === 0) customIds = allModules.map(m => m.id);
